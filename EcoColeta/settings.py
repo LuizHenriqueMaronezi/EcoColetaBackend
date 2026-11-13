@@ -28,7 +28,8 @@ SECRET_KEY = 'django-insecure-_l^jcf83xm=2mfb$xjchmi#o58-3a7$&rx$8)c=8*+i=66efji
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# Endereços aceitos (o celular acessa pelo IP da máquina do servidor). Ex.: ALLOWED_HOSTS=192.168.0.10,localhost
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
 
 
 # Application definition
@@ -80,20 +81,30 @@ WSGI_APPLICATION = 'EcoColeta.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-# Replace the DATABASES section of your settings.py with this
-tmpPostgres = urlparse(os.getenv("DATABASE_URL"))
+# Banco: Neon (PostgreSQL) via DATABASE_URL no .env. Sem DATABASE_URL, usa SQLite local
+# (útil para desenvolvimento e para os testes automatizados).
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': tmpPostgres.path.replace('/', ''),
-        'USER': tmpPostgres.username,
-        'PASSWORD': tmpPostgres.password,
-        'HOST': tmpPostgres.hostname,
-        'PORT': 5432,
-        'OPTIONS': dict(parse_qsl(tmpPostgres.query)),
+if DATABASE_URL:
+    tmpPostgres = urlparse(DATABASE_URL)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': tmpPostgres.path.replace('/', ''),
+            'USER': tmpPostgres.username,
+            'PASSWORD': tmpPostgres.password,
+            'HOST': tmpPostgres.hostname,
+            'PORT': 5432,
+            'OPTIONS': dict(parse_qsl(tmpPostgres.query)),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 LANGUAGE_CODE = "pt-br"
 TIME_ZONE = "America/Sao_Paulo"
@@ -121,13 +132,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.1/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
-
-TIME_ZONE = 'UTC'
-
 USE_I18N = True
-
-USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
@@ -153,5 +158,20 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
 }
 
-LOGIN_REDIRECT_URL = "/api/"
-LOGOUT_REDIRECT_URL = "/api/"
+LOGIN_REDIRECT_URL = "/api/v1/"
+LOGOUT_REDIRECT_URL = "/api/v1/"
+
+# =============================================
+# MQTT (Mosquitto local) e regras da coleta
+# =============================================
+
+MQTT_HOST = os.getenv("MQTT_HOST", "127.0.0.1")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("MQTT_USER", "backend")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
+MQTT_TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "ecocoleta/lixeiras")
+
+# Tempo de espera da coleta, em segundos. Deve ser igual ao TEMPO_COLETA do firmware.
+COLLECTION_SECONDS = int(os.getenv("COLLECTION_SECONDS", "180"))
+# Ocupação a partir da qual a lixeira é considerada cheia.
+FULL_THRESHOLD = int(os.getenv("FULL_THRESHOLD", "90"))

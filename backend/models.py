@@ -1,6 +1,5 @@
-import hashlib  # hash da chave do ESP32
-import hmac  # comparação em tempo constante da chave do ESP32
-import uuid  # chaves UUID (ids gerados pelo app / ESP32)
+import secrets  # geração da chave do Arduino
+import uuid  # chaves UUID (ids gerados pelo app / Arduino)
 
 # imports necessários para o usuário customizado
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
@@ -115,15 +114,21 @@ class Employee(AbstractBaseUser, PermissionsMixin):
         return f"{self.name} ({self.login})"
 
 
+def generate_bin_auth_key():
+    # 16 caracteres hexadecimais: curta o bastante para a RAM do Arduino Uno
+    return secrets.token_hex(8)
+
+
 class Bin(models.Model):
     name = models.CharField(max_length=120, null=False)
-    code = models.SmallIntegerField(null=False, unique=True)  # [ALTERAÇÃO] unique=True (código do QR do adesivo não pode repetir)
+    # Código da lixeira, gravado no firmware e usado no tópico MQTT (ecocoleta/lixeiras/<code>/...)
+    code = models.SmallIntegerField(null=False, unique=True)
 
 
     percent_full = models.SmallIntegerField(null=True, blank=True)
     state = models.CharField(max_length=120, choices=BIN_STATE, null=True, blank=True)
-    # chave que o ESP32 envia a cada requisição (texto simples)
-    auth_key = models.CharField(max_length=128, unique=True)
+    # chave que o Arduino envia em cada mensagem MQTT (texto simples, gerada automaticamente)
+    auth_key = models.CharField(max_length=128, unique=True, default=generate_bin_auth_key)
     # [ALTERAÇÃO] mantido como você definiu. A garantia real de "uma coleta ativa por lixeira" está na
     # constraint de Collection (collection_one_in_progress_per_bin)
     active_collection = models.OneToOneField('Collection', on_delete=models.SET_NULL, null=True, blank=True, related_name='active_in_bin')
@@ -162,10 +167,10 @@ class Collection(models.Model):
     deadline_at = models.DateTimeField()
     finished_at = models.DateTimeField(null=True, blank=True)
 
-    # [ADIÇÃO] ids dos eventos do ESP32 (evitam coleta duplicada se o ESP32 reenviar)
+    # [ADIÇÃO] ids dos eventos do Arduino (evitam coleta duplicada se o Arduino reenviar)
     start_event_id = models.UUIDField(unique=True)
     end_event_id = models.UUIDField(unique=True, null=True, blank=True)
-    # [ADIÇÃO] leitura final como o ESP32 reportou (o app Kotlin guarda ambas)
+    # [ADIÇÃO] leitura final como o Arduino reportou (o app Kotlin guarda ambas)
     reported_final_percent = models.SmallIntegerField(null=True, blank=True)
     reported_final_valid = models.BooleanField(null=True, blank=True)
 
@@ -228,7 +233,7 @@ class Alert(models.Model):
 
     # motivo da falha
     reason = models.CharField(max_length=120, choices=COLLECTION_FAILURES, null=True, blank=True)
-    # evento do ESP32 que abriu o alerta -> evita alerta duplicado
+    # evento do Arduino que abriu o alerta -> evita alerta duplicado
     source_event_id = models.UUIDField()
 
     class Meta:
@@ -286,11 +291,11 @@ class Shift(models.Model):
         ]
 
 
-# Histórico de medições do ESP32. O id vem do ESP32 e serve para ignorar reenvios.
+# Histórico de medições do Arduino. O id vem do Arduino e serve para ignorar reenvios.
 class MeasurementEvent(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     bin = models.ForeignKey(Bin, on_delete=models.PROTECT)
-    measured_at = models.DateTimeField(null=True, blank=True)  # caso o ESP32 informe o horario
+    measured_at = models.DateTimeField(null=True, blank=True)  # caso o Arduino informe o horario
     received_at = models.DateTimeField(auto_now_add=True)  # horário do servidor (o confiavel)
     reported_percent = models.SmallIntegerField(null=True, blank=True)
     reported_valid = models.BooleanField(default=False)
@@ -305,28 +310,4 @@ class MeasurementEvent(models.Model):
         ]
         indexes = [
             models.Index(fields=["bin", "-received_at"], name="measurement_bin_received_idx"),
-        ]
-
-
-# Vínculo do funcionario com a lixeira, criado quando ele escaneia o QR code da lixeira.
-# Quando o teclado inicia a coleta, o servidor liga o funcionário à coleta por este vínculo.
-class BinClaim(models.Model):
-    bin = models.ForeignKey(Bin, on_delete=models.PROTECT)
-    employee = models.ForeignKey(Employee, on_delete=models.PROTECT)
-    created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
-    # Preenchido quando o vínculo é usado, substituído ou expirado (o serviço deve encerrar os expirados
-    # antes de criar um novo, pois o banco não compara com a hora atual)
-    released_at = models.DateTimeField(null=True, blank=True)
-    # Coleta à qual o vínculo foi ligado, se houver
-    collection = models.ForeignKey(Collection, on_delete=models.SET_NULL, null=True, blank=True)
-
-    class Meta:
-        constraints = [
-            # Um vínculo ativo por lixeira
-            models.UniqueConstraint(
-                fields=["bin"],
-                condition=Q(released_at__isnull=True),
-                name="binclaim_one_active_per_bin",
-            ),
         ]
